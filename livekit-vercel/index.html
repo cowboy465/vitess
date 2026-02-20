@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chroma Voice</title>
+    <script src="https://unpkg.com/livekit-client@latest/dist/livekit.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            padding: 20px;
+        }
+        .container {
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 28px;
+            margin-bottom: 8px;
+            color: #00d4ff;
+        }
+        .subtitle {
+            color: #8892b0;
+            margin-bottom: 40px;
+            font-size: 14px;
+        }
+        .avatar {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #00d4ff, #7c3aed);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 30px;
+            font-size: 48px;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.05); opacity: 0.8; }
+        }
+        .status {
+            font-size: 16px;
+            margin-bottom: 30px;
+            min-height: 24px;
+        }
+        .status.connected { color: #00ff88; }
+        .status.connecting { color: #ffaa00; }
+        .status.error { color: #ff4444; }
+        
+        .btn {
+            background: linear-gradient(135deg, #00d4ff, #7c3aed);
+            border: none;
+            padding: 16px 48px;
+            font-size: 18px;
+            font-weight: 600;
+            color: white;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            box-shadow: 0 4px 20px rgba(0, 212, 255, 0.3);
+        }
+        .btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 30px rgba(0, 212, 255, 0.5);
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn.end {
+            background: linear-gradient(135deg, #ff4444, #ff8800);
+            box-shadow: 0 4px 20px rgba(255, 68, 68, 0.3);
+        }
+        
+        .transcript {
+            margin-top: 30px;
+            padding: 16px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 12px;
+            min-height: 60px;
+            text-align: left;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .transcript-label {
+            font-size: 11px;
+            color: #8892b0;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+        }
+        
+        #telegram-webview {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛰️ Chroma</h1>
+        <p class="subtitle">Voice Assistant</p>
+        
+        <div class="avatar">🛰️</div>
+        
+        <p class="status" id="status">Tap to start a voice call</p>
+        
+        <button class="btn" id="callBtn" onclick="startCall()">
+            Start Voice Call
+        </button>
+        
+        <div class="transcript">
+            <div class="transcript-label">Transcript</div>
+            <div id="transcript">Your conversation will appear here...</div>
+        </div>
+    </div>
+
+    <script>
+        // LiveKit configuration
+        const LIVEKIT_URL = 'wss://clawd-du70h79g.livekit.cloud';
+        const API_KEY = 'APIMb93GV3fqLwr';
+        const API_SECRET = '5K9wvpoIf0t3K8M3JfcTWTbIYKpMlhb7xf0i99NpaNBA';
+        
+        let room;
+        let isConnected = false;
+
+        // Get token from server (we'll create a simple token endpoint)
+        async function getToken() {
+            // For now, use a simple approach - generate token client-side
+            // In production, this should come from a server
+            const response = await fetch('/token');
+            if (response.ok) {
+                return await response.text();
+            }
+            // Fallback: return a placeholder - will need server for real auth
+            return null;
+        }
+
+        async function startCall() {
+            const btn = document.getElementById('callBtn');
+            const status = document.getElementById('status');
+            
+            if (isConnected) {
+                endCall();
+                return;
+            }
+            
+            btn.disabled = true;
+            status.textContent = 'Connecting...';
+            status.className = 'status connecting';
+            
+            try {
+                // Generate a simple token (for demo - in production use server)
+                const token = await generateToken('user-' + Date.now());
+                
+                room = new LiveKit.Room({
+                    adaptiveStream: true,
+                    dynacast: true,
+                    audio: true,
+                    video: false
+                });
+                
+                // Handle remote participants
+                room.on('participantConnected', (participant) => {
+                    console.log('Participant connected:', participant.identity);
+                    participant.on('trackSubscribed', (track) => {
+                        if (track.kind === 'audio') {
+                            track.attach();
+                        }
+                    });
+                    participant.on('trackUnsubscribed', (track) => {
+                        track.detach();
+                    });
+                });
+                
+                room.on('dataReceived', (payload) => {
+                    const decoder = new TextDecoder();
+                    const data = JSON.parse(decoder.decode(payload));
+                    if (data.text) {
+                        document.getElementById('transcript').textContent = data.text;
+                    }
+                });
+                
+                room.on('connectionStateChanged', (state) => {
+                    console.log('Connection state:', state);
+                    if (state === 'connected') {
+                        isConnected = true;
+                        status.textContent = 'Connected! Talk to Chroma...';
+                        status.className = 'status connected';
+                        btn.disabled = false;
+                        btn.textContent = 'End Call';
+                        btn.classList.add('end');
+                    } else if (state === 'disconnected') {
+                        isConnected = false;
+                        status.textContent = 'Call ended';
+                        status.className = 'status';
+                        btn.textContent = 'Start Voice Call';
+                        btn.classList.remove('end');
+                    }
+                });
+                
+                await room.connect(LIVEKIT_URL, token);
+                
+                // Publish local audio
+                await room.localParticipant.enableAudio();
+                
+            } catch (error) {
+                console.error('Error:', error);
+                status.textContent = 'Error: ' + error.message;
+                status.className = 'status error';
+                btn.disabled = false;
+            }
+        }
+
+        function endCall() {
+            if (room) {
+                room.disconnect();
+            }
+            isConnected = false;
+        }
+
+        // Simple token generation (client-side for demo only!)
+        // In production, this MUST be done server-side
+        async function generateToken(identity) {
+            // This is a simplified version - LiveKit tokens need proper signing
+            // For a real app, create a small server or use LiveKit Cloud's token API
+            const headers = { 'Content-Type': 'application/json' };
+            const body = JSON.stringify({
+                identity: identity,
+                name: 'Telegram User',
+                grant: {
+                    room: 'voice-room',
+                    roomJoin: true,
+                    canPublish: true,
+                    canSubscribe: true
+                }
+            });
+            
+            // Try to get token from a local endpoint
+            try {
+                const res = await fetch('/api/token', {
+                    method: 'POST',
+                    headers,
+                    body
+                });
+                if (res.ok) return await res.text();
+            } catch (e) {
+                console.log('No token server, using demo mode');
+            }
+            
+            // Demo: return a mock token (won't actually work)
+            return 'demo-token';
+        }
+
+        // Telegram WebApp initialization
+        if (window.Telegram && window.Telegram.WebApp) {
+            const tg = window.Telegram.WebApp;
+            tg.expand();
+            tg.ready();
+        }
+    </script>
+</body>
+</html>
